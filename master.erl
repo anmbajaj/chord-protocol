@@ -31,7 +31,7 @@ create_nodes(NumberOfNodesYetToSpawn, Acc, StabilizerPID, FixFingerPID) ->
   PID = spawn(?CHORD_NODE, init, []),
   io:fwrite("PID created is ~p~n", [PID]),
   StabilizerPID ! {PID, register_node},
-  FixFingerPID ! {PID, register_node},
+  %FixFingerPID ! {PID, register_node},
   create_nodes(NumberOfNodesYetToSpawn-1, [PID | Acc], StabilizerPID, FixFingerPID).
 
 start_master() ->
@@ -40,11 +40,14 @@ start_master() ->
       io:fwrite("Received start chord message... Creating the nodes now ~n"),
       _ = NumberOfRequests,
       StabilizerPID = spawn(?CHORD_NODE, stabilize, [[]]),
-      FixFingerPID = spawn(?CHORD_NODE, fix_finger_tables, [[]]),
+      FixFingerPID = spawn(?CHORD_NODE, fix_fingers, [NumberOfNodes, 0, 1, []]),
+      register(fix_finger_actor, FixFingerPID),
       Nodes = create_nodes(NumberOfNodes, [], StabilizerPID, FixFingerPID),
       StabilizerPID ! {self(), stabilizeSelf},
-      FixFingerPID ! {self(), fix_finger, 1},
-      build_p2p_network(Nodes);
+      build_p2p_network(Nodes),
+      timer:sleep(NumberOfNodes*5000),
+      fix_finger_actor ! {fix_fingers, Nodes};
+      %FixFingerPID ! {self(), fix_finger, 1};
     {Sender, ok, Message} ->
       io:fwrite("Received Message: From: ~p, Message: ~p~n", [Sender, Message])
   end,
