@@ -20,7 +20,8 @@
   predecessorPID,
   successorHashValue,
   successorPID,
-  finger_table
+  finger_table,
+  data
 }).
 
 get_preceding_node(_, _, 0, _) -> self();
@@ -65,7 +66,8 @@ start(#state{
   predecessorPID = PredecessorPID,
   successorHashValue = SuccessorHashValue,
   successorPID = SuccessorPID,
-  finger_table = FingerTable
+  finger_table = FingerTable,
+  data = Data
 } = State) ->
   %io:fwrite("Created chord node ~p with state ~p", [self(), State]),
   %io:fwrite("~nWaiting for message...... ~n"),
@@ -75,6 +77,7 @@ start(#state{
   io:fwrite("Successor PID is ~p for ~p ~n", [State#state.successorPID, self()]),
   io:fwrite("Predecessor node is ~p for ~p ~n", [State#state.predecessorHashValue, self()]),
   io:fwrite("Predecessor PID is ~p for ~p ~n", [State#state.predecessorPID, self()]),
+  io:fwrite("Data is ~p for ~p ~n", [State#state.data, self()]),
   receive
     {abc} ->
       _ = HashValue,
@@ -83,31 +86,32 @@ start(#state{
       _ = SuccessorHashValue,
       _ = SuccessorPID,
       _ = FingerTable,
+      _ = Data,
       _ = State;
     {_, add_new_node, NewNodePID} ->
-      io:fwrite("Received Message: Add new node ~p to the network ~n", [NewNodePID]),
+      %io:fwrite("Received Message: Add new node ~p to the network ~n", [NewNodePID]),
       NewNodePIDHashValue = get_hash_id(pid_to_list(NewNodePID)),
-      io:fwrite("Received Message: New node hash value is ~p ", [NewNodePIDHashValue]),
+      %io:fwrite("Received Message: New node hash value is ~p ", [NewNodePIDHashValue]),
       %SelfPID = self(),
       %self() ! {find_successor, NewNodePIDHashValue, NewNodePID},
       self() ! {find_successor, NewNodePIDHashValue, NewNodePID},
       start(State);
     {find_successor, NewNodePIDHashValue, NewNodePID} ->
-      io:fwrite("Do nothing!!!  ~p ~p ~n",[NewNodePIDHashValue, NewNodePID]),
+      %io:fwrite("Do nothing!!!  ~p ~p ~n",[NewNodePIDHashValue, NewNodePID]),
       find_successor(NewNodePIDHashValue, NewNodePID, State),
       start(State);
     {found_successor_update_node, PIDOfNodeToUpdate, SuccessorHashValueToUpdate, SuccessorPIDToUpdate} ->
-      io:fwrite("New node ~p successor found and Successor hashvalue: ~p and SuccessorPID: ~p ~n", [PIDOfNodeToUpdate, SuccessorHashValueToUpdate, SuccessorPIDToUpdate]),
+      %io:fwrite("New node ~p successor found and Successor hashvalue: ~p and SuccessorPID: ~p ~n", [PIDOfNodeToUpdate, SuccessorHashValueToUpdate, SuccessorPIDToUpdate]),
       PIDOfNodeToUpdate ! {update_successor, SuccessorHashValueToUpdate, SuccessorPIDToUpdate},
       start(State);
     {update_successor, SuccessorHashValueToUpdate, SuccessorPIDToUpdate} ->
       UpdatedState = State#state{successorHashValue = SuccessorHashValueToUpdate, successorPID = SuccessorPIDToUpdate},
-      io:format("Received udpated successor request Node ~p successor updated to ~p ~n", [self(), UpdatedState#state.successorPID]),
+     % io:format("Received udpated successor request Node ~p successor updated to ~p ~n", [self(), UpdatedState#state.successorPID]),
       SuccessorPIDToUpdate ! {update_predecessor, State#state.id, self()},
       start(UpdatedState);
     {update_predecessor, PredecessorHashValueToUpdate, PredecessorPIDToUpdate} ->
       UpdatedState = State#state{predecessorHashValue = PredecessorHashValueToUpdate, predecessorPID = PredecessorPIDToUpdate},
-      io:format("Received udpated predecessor request Node ~p predecssor updated to ~p ~n", [self(), UpdatedState#state.predecessorPID]),
+      %io:format("Received udpated predecessor request Node ~p predecssor updated to ~p ~n", [self(), UpdatedState#state.predecessorPID]),
       start(UpdatedState);
     {_, stablilze} ->
       SuccPID = State#state.successorPID,
@@ -151,8 +155,64 @@ start(#state{
       UpdatedMap = maps:put(IndexToUpdate, DataForGivenIndex, State#state.finger_table),
       UpdatedState = State#state{finger_table = UpdatedMap},
       fix_finger_actor ! {ith_finger_fixed, IndexToUpdate},
-      start(UpdatedState)
+      start(UpdatedState);
+    {dataset, Dataset} ->
+      io:fwrite("Harshini Data received is ~p for node ~p ~n ", [Dataset, self()]),
+      DataForNode = assign_appropriate_data(maps:keys(Dataset), Dataset, maps:new(), State),
+      UpdatedState = State#state{
+        data = DataForNode
+      },
+      start(UpdatedState);
+    {Sender, lookup_data, DatasetToLookup, TotalRequests, TotalNodes} ->
+      lookup_dataset(Sender, maps:keys(DatasetToLookup), DatasetToLookup, State, 0, TotalRequests, TotalNodes),
+      start(State);
+    {Sender, find_string, NodePIDHashValue, NodePID, Count, TotalNodes} ->
+      findString(Sender, NodePIDHashValue, NodePID, State, Count, TotalNodes),
+      start(State)
   end.
+
+findString(Sender, HashValue, NodeIP, State, HopCount, TotalNodes) ->
+  io:fwrite("COUNT IS ~p ~n", [HopCount]),
+  if HopCount == TotalNodes ->
+    HopCount = 0,
+    ok;
+    true ->
+    if
+      HashValue > State#state.id andalso HashValue =< State#state.successorHashValue ->
+        io:fwrite("Found ~n"),
+        Sender ! {found_data, HopCount};
+        true ->
+          PrecedingNodePID = closest_preceding_node(HashValue, State),
+          SelfPIDString = pid_to_list(self()),
+          PrecedingNodePIDString = pid_to_list(PrecedingNodePID),
+          if
+            SelfPIDString == PrecedingNodePIDString ->
+              io:fwrite("Found ~n"),
+              Sender ! {found_data, HopCount};
+            true ->
+              PrecedingNodePID ! {Sender, find_string, HashValue, NodeIP, HopCount + 1, TotalNodes }
+          end
+      end
+  end.
+
+lookup_dataset(Sender, _, _, _, NumOfRequests, NumOfRequests, _) ->
+  Sender ! {lookup_successful},
+  exit(self());
+lookup_dataset(Sender, [String |StringsToLookup], Data, State, Count, NumOfRequests, TotalNodes) ->
+  HashValue = maps:get(String, Data),
+  findString(Sender, HashValue, self(), State, 0, TotalNodes),
+  lookup_dataset(Sender, StringsToLookup, Data, State, Count + 1, NumOfRequests, TotalNodes).
+
+
+assign_appropriate_data([], _ , DataToBeStored, _) -> DataToBeStored;
+assign_appropriate_data([String | Strings], Data, DataToBeStored, State) ->
+  HashOfString = maps:get(String, Data),
+  if HashOfString > State#state.predecessorHashValue andalso HashOfString =< State#state.id ->
+    UpdatedDataToBeStored = maps:put(String, HashOfString, DataToBeStored);
+    true ->
+      UpdatedDataToBeStored = DataToBeStored
+  end,
+  assign_appropriate_data(Strings, Data, UpdatedDataToBeStored, State).
 
 insert_initial_data_in_finger_table(?NUMBER_OF_BITS, _, FingerTable) -> FingerTable;
 insert_initial_data_in_finger_table(LastInsertedKey, HashValue, FingerTable) ->
