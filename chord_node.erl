@@ -52,6 +52,14 @@ find_successor(HashValue, NewNodePID, State) ->
         SelfPIDString == PrecedingNodePIDString ->
           io:fwrite("PID: ~p itself is the succcessor of self: ~p~n", [PrecedingNodePID, self()]),
           io:fwrite("Found the successor for ~p, Successor PID HashValue: ~p and Successor PID: ~p...... Sendinf the message of found_successor_update_node~n", [NewNodePID, State#state.id, self()]),
+          %if
+          %  HashValue < State#state.id ->
+          %    io:fwrite("Entered inside  IF INSIDE IF"),
+          %    self() ! {found_successor_update_node, self(), HashValue, NewNodePID};
+          %  true ->
+          %    io:fwrite("Entered inside ELSE OF IF AND IF"),
+          %    self() ! {found_successor_update_node, NewNodePID, State#state.id, self()}
+          %end;
           self() ! {found_successor_update_node, NewNodePID, State#state.id, self()};
         true ->
           io:fwrite("Preceding node found....  PID: ~p Lets query it for successor", [PrecedingNodePID]),
@@ -157,7 +165,7 @@ start(#state{
       fix_finger_actor ! {ith_finger_fixed, IndexToUpdate},
       start(UpdatedState);
     {dataset, Dataset} ->
-      io:fwrite("Harshini Data received is ~p for node ~p ~n ", [Dataset, self()]),
+      %io:fwrite("Harshini Data received is ~p for node ~p ~n ", [Dataset, self()]),
       DataForNode = assign_appropriate_data(maps:keys(Dataset), Dataset, maps:new(), State),
       UpdatedState = State#state{
         data = DataForNode
@@ -168,28 +176,54 @@ start(#state{
       start(State);
     {Sender, find_string, NodePIDHashValue, NodePID, Count, TotalNodes} ->
       findString(Sender, NodePIDHashValue, NodePID, State, Count, TotalNodes),
+      start(State);
+    {find_successor_for_string, MasterPID, HashValue, HopCount} ->
+      find_successor_for_string(MasterPID, HashValue, HopCount, State),
       start(State)
   end.
 
+find_successor_for_string(MasterPID, HashValue, HopCount, State) ->
+  if
+    HashValue >= State#state.id andalso HashValue =< State#state.successorHashValue ->
+      MasterPID ! {found_data, HopCount+1};
+    true ->
+      PrecedingNodePID = closest_preceding_node(HashValue, State),
+      SelfPIDString = pid_to_list(self()),
+      PrecedingNodePIDString = pid_to_list(PrecedingNodePID),
+      if
+        SelfPIDString == PrecedingNodePIDString ->
+          MasterPID ! {found_data, HopCount};
+        true ->
+          PrecedingNodePID ! {find_successor_for_string, MasterPID, HashValue, HopCount+1}
+      end
+  end.
+
+find_string(Sender, HashValue, State) ->
+  find_successor_for_string(Sender, HashValue, 0, State).
+
 findString(Sender, HashValue, NodeIP, State, HopCount, TotalNodes) ->
-  io:fwrite("COUNT IS ~p ~n", [HopCount]),
+  io:fwrite("Count is ~p ~n", [HopCount]),
   if HopCount == TotalNodes ->
     HopCount = 0,
     ok;
     true ->
     if
       HashValue > State#state.id andalso HashValue =< State#state.successorHashValue ->
+        io:fwrite("Are you coming here at FIRST IF condition for string ~p at node ~p ~n", [HashValue, self()]),
         io:fwrite("Found ~n"),
-        Sender ! {found_data, HopCount};
+        Sender ! {found_data, HopCount+1};
         true ->
+          io:fwrite("Are you coming here at FIRST ELSE condition for string ~p at node ~p ~n", [HashValue, self()]),
           PrecedingNodePID = closest_preceding_node(HashValue, State),
           SelfPIDString = pid_to_list(self()),
           PrecedingNodePIDString = pid_to_list(PrecedingNodePID),
           if
             SelfPIDString == PrecedingNodePIDString ->
+              io:fwrite("Are you coming here at SECOND IF condition for string ~p at node ~p ~n", [HashValue, self()]),
               io:fwrite("Found ~n"),
               Sender ! {found_data, HopCount};
             true ->
+              io:fwrite("Are you coming here at SECOND ELSE condition for string ~p at node ~p ~n", [HashValue, self()]),
               PrecedingNodePID ! {Sender, find_string, HashValue, NodeIP, HopCount + 1, TotalNodes }
           end
       end
@@ -200,17 +234,31 @@ lookup_dataset(Sender, _, _, _, NumOfRequests, NumOfRequests, _) ->
   exit(self());
 lookup_dataset(Sender, [String |StringsToLookup], Data, State, Count, NumOfRequests, TotalNodes) ->
   HashValue = maps:get(String, Data),
-  findString(Sender, HashValue, self(), State, 0, TotalNodes),
+  timer:sleep(1000),
+  find_string(Sender, HashValue, State),
+  %findString(Sender, HashValue, self(), State, 0, TotalNodes),
   lookup_dataset(Sender, StringsToLookup, Data, State, Count + 1, NumOfRequests, TotalNodes).
-
 
 assign_appropriate_data([], _ , DataToBeStored, _) -> DataToBeStored;
 assign_appropriate_data([String | Strings], Data, DataToBeStored, State) ->
   HashOfString = maps:get(String, Data),
+  %io:fwrite("The Hash to be stored is ~p at node with hash ~p ~n", [HashOfString, State#state.id]),
   if HashOfString > State#state.predecessorHashValue andalso HashOfString =< State#state.id ->
+    %io:fwrite("Entered FIRST IF at assign. Pred is ~p , Id is ~p ~n", [State#state.predecessorHashValue, State#state.id]),
     UpdatedDataToBeStored = maps:put(String, HashOfString, DataToBeStored);
     true ->
-      UpdatedDataToBeStored = DataToBeStored
+      %io:fwrite("Entered FIRST ELSE at assign. Pred is ~p , Id is ~p ~n", [State#state.predecessorHashValue, State#state.id]),
+      if State#state.predecessorHashValue > State#state.id ->
+        io:fwrite("Here"),
+        if HashOfString > State#state.predecessorHashValue orelse HashOfString < State#state.id ->
+          io:fwrite("Entered SECOND IF at assign. Pred is ~p , Id is ~p ~n", [State#state.predecessorHashValue, State#state.id]),
+          UpdatedDataToBeStored = maps:put(String, HashOfString, DataToBeStored);
+          true->
+            UpdatedDataToBeStored = DataToBeStored
+        end;
+        true ->
+          UpdatedDataToBeStored = DataToBeStored
+      end
   end,
   assign_appropriate_data(Strings, Data, UpdatedDataToBeStored, State).
 

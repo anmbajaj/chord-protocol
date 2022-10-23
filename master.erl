@@ -40,7 +40,7 @@ generate_data(Data, Count, NumberOfRequests ) ->
   RandomString = get_random_string(?RANDOM_STRING_LENGTH, ?ALLOWED_CHARS),
   <<SHA256Value:256>> = crypto:hash(sha256, [RandomString]),
   FinalHashString = SHA256Value rem trunc(math:pow(2, ?NUMBER_OF_BITS)),
-  io:fwrite("Anmol Bajaj Final Hash is ~p ~n", [FinalHashString]),
+  %io:fwrite("Anmol Bajaj Final Hash is ~p ~n", [FinalHashString]),
   NewData = maps:put(RandomString, FinalHashString, Data),
   generate_data(NewData, Count + 1, NumberOfRequests).
 
@@ -66,7 +66,7 @@ start_master(NodesExecuted, SumOfCount, TotalNodes, TotalRequests) ->
     {start_chord, NumberOfNodes, NumberOfRequests} ->
       %io:fwrite("Received start chord message... Creating the nodes now ~n"),
       EmptyDataMap = maps:new(),
-      Data = generate_data(EmptyDataMap, 0, NumberOfRequests * 5),
+      Data = generate_data(EmptyDataMap, 0, NumberOfRequests),
       StabilizerPID = spawn(?CHORD_NODE, stabilize, [[]]),
       FixFingerPID = spawn(?CHORD_NODE, fix_fingers, [NumberOfNodes, 0, 1, []]),
       register(fix_finger_actor, FixFingerPID),
@@ -76,6 +76,7 @@ start_master(NodesExecuted, SumOfCount, TotalNodes, TotalRequests) ->
       timer:sleep(NumberOfNodes*5000),
       fix_finger_actor ! {fix_fingers, Nodes},
       store_the_data(Data, Nodes),
+      timer:sleep(10000),
       look_up_data(Data, Nodes, NumberOfRequests, NumberOfNodes),
       start_master(NodesExecuted, SumOfCount, NumberOfNodes, NumberOfRequests);
     {Sender, ok, Message} ->
@@ -84,6 +85,8 @@ start_master(NodesExecuted, SumOfCount, TotalNodes, TotalRequests) ->
     {lookup_successful} ->
       start_master(NodesExecuted + 1, SumOfCount, TotalNodes, TotalRequests);
     {found_data, Count} ->
+      io:fwrite("Count received is : ~p~n", [Count]),
+      io:fwrite("Received messaged at master~n"),
       NewSum = SumOfCount + Count,
       if NodesExecuted == TotalNodes ->
         Average = NewSum / TotalRequests,
@@ -92,7 +95,7 @@ start_master(NodesExecuted, SumOfCount, TotalNodes, TotalRequests) ->
         true ->
           ok
       end,
-      start_master(NodesExecuted, NewSum, TotalNodes, TotalRequests)
+      start_master(NodesExecuted+1, NewSum, TotalNodes, TotalRequests)
   end,
   start_master(NodesExecuted, SumOfCount, TotalNodes, TotalRequests).
 
