@@ -10,7 +10,7 @@
 -author("anmbajaj").
 
 %% API
--export([start/1, init/0]).
+-export([start/1, init/0, stabilize/1, fix_finger_tables/1]).
 
 -define(NUMBER_OF_BITS, 16).
 
@@ -39,7 +39,7 @@ closest_preceding_node(HashValue, State) ->
 find_successor(HashValue, NewNodePID, State) ->
   if
     HashValue >= State#state.id andalso HashValue =< State#state.successorHashValue ->
-      {SuccessorPIDHashValue, SuccessorPID} = maps:get(1, State#state.finger_table),
+      {SuccessorPIDHashValue, SuccessorPID} = {State#state.successorHashValue, State#state.successorPID},
       io:fwrite("Found the successor for ~p, Successor PID HashValue: ~p and Successor PID: ~p...... Sendinf the message of found_successor_update_node~n", [NewNodePID, SuccessorPIDHashValue, SuccessorPIDHashValue]),
       self() ! {found_successor_update_node, NewNodePID, SuccessorPIDHashValue, SuccessorPID};
     true ->
@@ -59,6 +59,27 @@ find_successor(HashValue, NewNodePID, State) ->
       end
   end.
 
+find_successor_for_fixing_finger_table(HashValue, NodePID, State, IndexToFix) ->
+  io:fwrite("Hashvalue at find successor for fixing finger table is ~p for node IP ~p and hash ~p ~n", [HashValue, self(), State#state.id]),
+  if
+    HashValue >= State#state.id andalso HashValue =< State#state.successorHashValue ->
+      {SuccessorPIDHashValue, SuccessorPID} = {State#state.successorHashValue, State#state.successorPID},
+      io:fwrite("Satisfies the conditon for Hash value: ~p between Current node id: ~p and successor: ~p ~n", [HashValue, self(), SuccessorPID]),
+      NodePID ! {self(), found_successor_for_fix_finger_table, SuccessorPIDHashValue, SuccessorPID, IndexToFix};
+    true ->
+      PrecedingNodePID = closest_preceding_node(HashValue, State),
+      SelfPIDString = pid_to_list(self()),
+      PrecedingNodePIDString = pid_to_list(PrecedingNodePID),
+      if
+        SelfPIDString == PrecedingNodePIDString ->
+          io:fwrite("PID: ~p itself is the succcessor of self: ~p~n", [PrecedingNodePID, self()]),
+          NodePID ! {self(), found_successor_for_fix_finger_table, State#state.id, self(), IndexToFix};
+        true ->
+          io:fwrite("Preceding node found....  PID: ~p Lets query it for successor", [PrecedingNodePID]),
+          PrecedingNodePID ! {find_successor_for_fixing_finger_table, HashValue, NodePID}
+      end
+  end.
+
 start(#state{
   id = HashValue,
   predecessorHashValue = PredecessorHashValue,
@@ -69,6 +90,12 @@ start(#state{
 } = State) ->
   %io:fwrite("Created chord node ~p with state ~p", [self(), State]),
   %io:fwrite("~nWaiting for message...... ~n"),
+  io:fwrite("Curr node is ~p for ~p ~n", [State#state.id, self()]),
+  io:fwrite("Finger table is ~p ~p ~n", [State#state.finger_table, self()]),
+  io:fwrite("Successor is ~p for ~p ~n", [State#state.successorHashValue, self()]),
+  io:fwrite("Successor PID is ~p for ~p ~n", [State#state.successorPID, self()]),
+  io:fwrite("Predecessor node is ~p for ~p ~n", [State#state.predecessorHashValue, self()]),
+  io:fwrite("Predecessor PID is ~p for ~p ~n", [State#state.predecessorPID, self()]),
   receive
     {abc} ->
       _ = HashValue,
@@ -102,7 +129,41 @@ start(#state{
     {update_predecessor, PredecessorHashValueToUpdate, PredecessorPIDToUpdate} ->
       UpdatedState = State#state{predecessorHashValue = PredecessorHashValueToUpdate, predecessorPID = PredecessorPIDToUpdate},
       io:format("Received udpated predecessor request Node ~p predecssor updated to ~p ~n", [self(), UpdatedState#state.predecessorPID]),
-      start(UpdatedState)
+      start(UpdatedState);
+    {_, stablilze} ->
+      SuccPID = State#state.successorPID,
+      SuccPID ! {self(), get_predecessor},
+      start(State);
+    {Sender, get_predecessor} ->
+      Pred = State#state.predecessorHashValue,
+      PredPID = State#state.predecessorPID,
+      Sender ! {self(), predecessor, Pred, PredPID},
+      start(State);
+    {_, predecessor, Pred, PredPID} ->
+      UpdatedState = handle_stabilize(State, Pred, PredPID),
+      SuccPID = UpdatedState#state.successorPID,
+      SuccPID ! {self(), notify, State#state.id, self()},
+      start(UpdatedState);
+    {_, notify, N, NPID} ->
+      UpdatedState = notify(State, N, NPID),
+      start(UpdatedState);
+    {_, fix_finger_table, IndexToFix} ->
+      io:fwrite("REACHED HERE!!!!!!!!~n"),
+      ModuloValue  = trunc(math:pow(2, IndexToFix - 1)) rem trunc(math:pow(2, ?NUMBER_OF_BITS)),
+      IthFingerHashValue = State#state.id + ModuloValue,
+      io:fwrite("Ith hash value is ~p ~n", [IthFingerHashValue]),
+      self() ! {find_successor_for_fixing_finger_table, IthFingerHashValue, self(), IndexToFix},
+      start(State);
+    {_, found_successor_for_fix_finger_table, SuccessorHashValueForFixFinger, SuccessorPIDForFixFinger, IndexToFix} ->
+      UpdatedIthIndexData = {SuccessorHashValueForFixFinger, SuccessorPIDForFixFinger},
+      io:fwrite("Updated Ith Data is : ~p  for ~p ~n", [UpdatedIthIndexData, self()]),
+      UpdatedMap = maps:put(IndexToFix, UpdatedIthIndexData, State#state.finger_table),
+      UpdatedState = State#state{finger_table = UpdatedMap},
+      io:fwrite("REACHED HERE NOW!!!!!!!!!!!~n"),
+      start(UpdatedState);
+    {find_successor_for_fixing_finger_table, IthFingerHashValue, FixFingerTableNodePID, NewIndexToFix} ->
+      find_successor_for_fixing_finger_table(IthFingerHashValue, FixFingerTableNodePID, State, NewIndexToFix),
+      start(State)
   end.
 
 insert_initial_data_in_finger_table(?NUMBER_OF_BITS, _, FingerTable) -> FingerTable;
@@ -118,6 +179,70 @@ create_initial_finger_table(HashValue) ->
 get_hash_id(NodePID) ->
   <<SHA256Value:256>> = crypto:hash(sha256, [NodePID]),
   SHA256Value rem trunc(math:pow(2, ?NUMBER_OF_BITS)).
+
+stabilize(PIDs) ->
+  receive
+    {Sender, register_node} ->
+      PIDList = [Sender | PIDs],
+      stabilize(PIDList);
+    {_, stabilizeSelf} ->
+      timer:sleep(1000),
+      stabilize_nodes(PIDs),
+      self() ! {self(),stabilizeSelf},
+      stabilize(PIDs)
+  end.
+
+stabilize_nodes([]) -> ok;
+stabilize_nodes([PID | PIDs]) ->
+  PID ! {self(), stablilze},
+  stabilize_nodes(PIDs).
+
+handle_stabilize(State, Pred, PredPID) ->
+  if
+    Pred =/= State#state.id  ->
+      UpdatedState = State#state{successorHashValue  = Pred,
+      successorPID = PredPID},
+      self() ! {update_state, UpdatedState};
+    true ->
+      UpdatedState = State#state{},
+      ok
+  end,
+  UpdatedState.
+
+notify(State, NewPredecessorHashValue, NewPredecessorPID) ->
+  CurrentPredecessor = State#state.predecessorHashValue,
+  if CurrentPredecessor == State#state.id->
+    UpdatedState = State#state{
+      predecessorHashValue = NewPredecessorHashValue,
+      predecessorPID = NewPredecessorPID
+    };
+    true ->
+      UpdatedState = State
+  end,
+  UpdatedState.
+
+
+fix_finger_tables(PIDs) ->
+  receive
+    {Sender, register_node} ->
+      PIDList = [Sender | PIDs],
+      fix_finger_tables(PIDList);
+    {_, fix_finger, IndexToFix} ->
+      timer:sleep(1000),
+      fix_fingers_of_nodes(PIDs, IndexToFix),
+      if IndexToFix + 1 > ?NUMBER_OF_BITS  ->
+        NewIndexToFix = 1;
+        true ->
+          NewIndexToFix = IndexToFix + 1
+      end,
+      self() ! {self(),fix_finger, NewIndexToFix},
+      fix_finger_tables(PIDs)
+  end.
+
+fix_fingers_of_nodes([], _) -> ok;
+fix_fingers_of_nodes([PID | PIDs], IndexToFix) ->
+  PID ! {self(), fix_finger_table, IndexToFix},
+  fix_fingers_of_nodes(PIDs, IndexToFix).
 
 init() ->
   HashValue = get_hash_id(pid_to_list(self())),
